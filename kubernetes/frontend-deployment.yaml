@@ -1,0 +1,22 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: frontend-deployment
+spec:
+  selector:
+    matchLabels:
+      app: frontend
+  replicas: 2
+  template:
+    metadata:
+      labels:
+        app: frontend
+    spec:
+      containers:
+        - name: frontend
+          image: 125943371674.dkr.ecr.us-east-1.amazonaws.com/dockerimage
+          ports:
+            - containerPort: 3000
+          env:
+            - name: API_URL
+              value: "http://backend-service:5000"
