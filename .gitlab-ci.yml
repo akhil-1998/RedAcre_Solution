@@ -1,0 +1,128 @@
+variables:
+  DOCKER_HOST: tcp://docker:2375
+  AWS_DEFAULT_REGION: us-east-1
+  DOCKER_REGISTRY: 125943371674.dkr.ecr.us-east-1.amazonaws.com
+  REGISTRY_NAME_FRONTEND: dockerimage
+  REGISTRY_NAME_BACKEND: dockerbackend
+  TF_DIR: ${CI_PROJECT_DIR}/terraform
+  STATE_NAME: "terraformk8s-tf"
+  ADDRESS: "https://gitlab.com/api/v4/projects/${CI_PROJECT_ID}/terraform/state/${STATE_NAME}"
+
+stages:
+  - docker_build
+  - docker_compose
+  - iac_terraform
+  - deploy_k8s
+
+build_frontend:
+  stage: docker_build
+  image: 
+    name: amazon/aws-cli
+    entrypoint: [""]
+  services:
+    - docker:dind
+  before_script: 
+    - amazon-linux-extras install docker
+    - aws --version
+    - docker --version
+  script:
+    - cd sys-stats
+    - docker build -t $DOCKER_REGISTRY/$REGISTRY_NAME_FRONTEND .
+    - aws ecr get-login-password | docker login --username AWS --password-stdin $DOCKER_REGISTRY
+    - docker push $DOCKER_REGISTRY/$REGISTRY_NAME_FRONTEND
+  artifacts:
+    paths:
+      - sys-stats/build
+    expire_in: 1 hour
+
+build_backend:
+  stage: docker_build
+  image: 
+    name: amazon/aws-cli
+    entrypoint: [""]
+  services:
+    - docker:dind
+  before_script: 
+    - amazon-linux-extras install docker
+    - aws --version
+    - docker --version
+  script:
+    - cd api
+    - docker build -t $DOCKER_REGISTRY/$REGISTRY_NAME_BACKEND .
+    - aws ecr get-login-password | docker login --username AWS --password-stdin $DOCKER_REGISTRY
+    - docker push $DOCKER_REGISTRY/$REGISTRY_NAME_BACKEND
+  artifacts:
+    paths:
+      - api/build
+    expire_in: 1 hour
+
+docker_compose:
+  stage: docker_compose
+  image: 
+    name: amazon/aws-cli
+    entrypoint: [""]
+  services:
+    - docker:dind
+  before_script: 
+    - amazon-linux-extras install docker
+    - yum install -y python3-pip
+    - pip3 install docker-compose
+    - docker-compose --version
+    - aws --version
+    - docker --version
+  script:
+    - docker-compose up --build -d
+    - aws ecr get-login-password | docker login --username AWS --password-stdin $DOCKER_REGISTRY
+  dependencies:
+    - build_frontend
+    - build_backend
+
+
+iac_terraform:
+  stage: iac_terraform
+  image:
+    name: hashicorp/terraform:light
+    entrypoint: [""]
+  before_script:
+    - terraform --version
+    - export GITLAB_ACCESS_TOKEN=$TOKEN
+    - cd ${TF_DIR}
+    - terraform init  -reconfigure -backend-config="address=${ADDRESS}" -backend-config="lock_address=${ADDRESS}/lock" -backend-config="unlock_address=${ADDRESS}/lock" -backend-config="username=<UseName>" -backend-config="password=$GITLAB_ACCESS_TOKEN" -backend-config="lock_method=POST" -backend-config="unlock_method=DELETE" -backend-config="retry_wait_min=5"
+  script:
+    - terraform validate
+  script:
+    - terraform plan
+  # script:
+  #   - terraform apply -auto-approve
+  cache:
+    key: ${CI_COMMIT_REF_NAME}
+    paths:
+    - ${TF_DIR}/.terraform
+    policy: pull-push
+
+
+deploy_k8s:
+  stage: deploy_k8s
+  image: 
+    name: amazon/aws-cli
+    entrypoint: [""]
+  services:
+    - docker:dind
+  before_script: 
+    - amazon-linux-extras install docker
+    - pip3 install awscli
+    - aws eks update-kubeconfig --name <your-cluster-name> --region $AWS_DEFAULT_REGION # this command updates the kubeconfig for the specified EKS cluster
+    - kubectl config use-context <your-cluster-name> # this command sets the context for kubectl to use the EKS cluster
+    - kubectl config current-context # this command verifies the current context
+    - aws --version
+    - docker --version
+  script:
+    - kubectl apply -f kubernetes/frontend-deployment.yaml # this command deploys the frontend service
+    - kubectl apply -f kubernetes/backend-deployment.yaml # this command deploys the backend service
+    - kubectl apply -f kubernetes/frontend-service.yaml 
+    - kubectl apply -f kubernetes/backend-service.yaml 
+    - kubectl get services # this command verifies that the services are running
+
+  dependencies:
+    - iac_terraform
+  when: manual
